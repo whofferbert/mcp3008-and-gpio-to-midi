@@ -1,0 +1,3 @@
+[submodule "uresponsivevalue"]
+	path = uresponsivevalue
+	url = https://github.com/qubitstream/uresponsivevalue
