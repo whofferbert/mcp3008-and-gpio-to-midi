@@ -14,32 +14,30 @@ from adafruit_mcp3xxx.analog_in import AnalogIn
 from uresponsivevalue.uresponsivevalue import ResponsiveValue
  
 import RPi.GPIO as GPIO
-import datetime
 
 import threading
 
 # the name of how it'll show up
 midiName = "The_Never_MIDI"
 
+# these callbacks should be better
 def my_callback(channel):
     # 11
     if GPIO.input(channel) == GPIO.HIGH:
         send_cc(0, 11, 0)
-        # 
-        print('1 ▼  at ' + str(datetime.datetime.now()))
+        #print('1 ▼ ')
     else:
         send_cc(0, 11, 127)
-        # 
-        print('1 ▲ at ' + str(datetime.datetime.now()))
+        #print('1 ▲ ')
  
 def my_callback2(channel):
     # 12
     if GPIO.input(channel) == GPIO.HIGH:
         send_cc(0, 12, 0)
-        print('2 ▼  at ' + str(datetime.datetime.now()))
+        #print('2 ▼ ')
     else:
         send_cc(0, 12, 127)
-        print('2 ▲ at ' + str(datetime.datetime.now()))
+        #print('2 ▲ ')
 
 # create the spi bus
 spi = busio.SPI(clock=board.SCK, MISO=board.MISO, MOSI=board.MOSI)
@@ -121,17 +119,21 @@ class ButtonHandler(threading.Thread):
         self.lastpinval = pinval
         self.lock.release()
 
+
 # set up interrupt pins for switches
 # these should be debounced
+# forward button
 GPIO.setup(6, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 tmp_cb1 = ButtonHandler(6, my_callback, edge='both', bouncetime=10)
 tmp_cb1.start()
 GPIO.add_event_detect(6, GPIO.BOTH, callback=tmp_cb1)
 
+# back button
 GPIO.setup(13, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 tmp_cb2 = ButtonHandler(13, my_callback2, edge='both', bouncetime=10)
 tmp_cb2.start()
 GPIO.add_event_detect(13, GPIO.BOTH, callback=tmp_cb2)
+
 
 def remap_range(value, left_min, left_max, right_min, right_max):
     # this remaps a value from original (left) range to new (right) range
@@ -145,10 +147,12 @@ def remap_range(value, left_min, left_max, right_min, right_max):
     # Convert the 0-1 range into a value in the right range.
     return int(right_min + (valueScaled * right_span))
 
+
 def send_cc(channel, ccnum, val):
     msg = mido.Message('control_change', channel=channel, control=ccnum, value=val)
     output = mido.open_output(midi_output_device)
     output.send(msg)
+
 
 def check_for_running_midi():
     # TODO make this better
@@ -160,6 +164,7 @@ def check_for_running_midi():
     # 0 = running
     # 256/anything else = nope
     return check
+
 
 def setup_midi_backend():
     # set up backend
@@ -181,6 +186,7 @@ def setup_midi_backend():
     global midi_output_device
     midi_output_device = newList[0]
     #print("Using MIDI device:", midi_output_device)
+
 
 def loop():
     while True:
@@ -217,6 +223,7 @@ def loop():
         # hang out for a bit, 10ms
         time.sleep(0.01)
 
+
 def run():
     # set up the midi stuff
     setup_midi_backend()
@@ -225,6 +232,7 @@ def run():
     my_callback2()
     # then just loop
     loop()
+
 
 if __name__ == "__main__":
     run()
