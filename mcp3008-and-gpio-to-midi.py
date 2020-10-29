@@ -228,8 +228,8 @@ def run():
     # set up the midi stuff
     setup_midi_backend()
     # do initial callbacks to set button states
-    my_callback()
-    my_callback2()
+    my_callback(6)
+    my_callback2(13)
     # then just loop
     loop()
 
