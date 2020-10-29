@@ -1,6 +1,9 @@
 #!/usr/bin/python3
-# coding=utf-8
+# a script to watch some GPIO pins, as well
+# as an mcp3008, and spit out midi info about it
 
+import mido
+import re
 import os
 import time
 import busio
@@ -14,18 +17,29 @@ import RPi.GPIO as GPIO
 import datetime
 
 import threading
- 
+
+# the name of how it'll show up
+midiName = "The_Never_MIDI"
+
 def my_callback(channel):
+    # 11
     if GPIO.input(channel) == GPIO.HIGH:
-        print('\n▼  at ' + str(datetime.datetime.now()))
+        send_cc(0, 11, 0)
+        # 
+        print('1 ▼  at ' + str(datetime.datetime.now()))
     else:
-        print('\n ▲ at ' + str(datetime.datetime.now()))
+        send_cc(0, 11, 127)
+        # 
+        print('1 ▲ at ' + str(datetime.datetime.now()))
  
 def my_callback2(channel):
+    # 12
     if GPIO.input(channel) == GPIO.HIGH:
-        print('\n▼  at ' + str(datetime.datetime.now()))
+        send_cc(0, 12, 0)
+        print('2 ▼  at ' + str(datetime.datetime.now()))
     else:
-        print('\n ▲ at ' + str(datetime.datetime.now()))
+        send_cc(0, 12, 127)
+        print('2 ▲ at ' + str(datetime.datetime.now()))
 
 # create the spi bus
 spi = busio.SPI(clock=board.SCK, MISO=board.MISO, MOSI=board.MOSI)
@@ -52,7 +66,7 @@ adcTolerance = 65535 / 128 * 1.25
 
 # bottom forward
 chan0 = AnalogInMidi(mcp, MCP.P0)
-chan0.midiAssignment = 6
+chan0.midiAssignment = 13
 chan0.smoothed = ResponsiveValue(chan0.readVal, max_value=65535, activity_threshold=adcTolerance)
 # top forward
 chan1 = AnalogInMidi(mcp, MCP.P1)
@@ -60,7 +74,7 @@ chan1.midiAssignment = 7
 chan1.smoothed = ResponsiveValue(chan1.readVal, max_value=65535, activity_threshold=adcTolerance)
 # bottom back
 chan2 = AnalogInMidi(mcp, MCP.P2)
-chan2.midiAssignment = 8
+chan2.midiAssignment = 10
 chan2.smoothed = ResponsiveValue(chan2.readVal, max_value=65535, activity_threshold=adcTolerance)
 # top back
 chan3 = AnalogInMidi(mcp, MCP.P3)
@@ -131,6 +145,43 @@ def remap_range(value, left_min, left_max, right_min, right_max):
     # Convert the 0-1 range into a value in the right range.
     return int(right_min + (valueScaled * right_span))
 
+def send_cc(channel, ccnum, val):
+    msg = mido.Message('control_change', channel=channel, control=ccnum, value=val)
+    output = mido.open_output(midi_output_device)
+    output.send(msg)
+
+def check_for_running_midi():
+    # TODO make this better
+    # so shitty, not pythonic at all
+    # if only I weren't a linux sysadmin
+    checkGrep = 'ps -ef | grep -Po "amidithru\s*' + midiName + '" | grep -v grep >/dev/null'
+    check = os.system(checkGrep)
+    #print("check val is %s" % check)
+    # 0 = running
+    # 256/anything else = nope
+    return check
+
+def setup_midi_backend():
+    # set up backend
+    mido.set_backend('mido.backends.rtmidi')
+
+    # system command to set up the midi thru port
+    if check_for_running_midi():
+        runCmd = "amidithru '" + midiName + "' &"
+        os.system(runCmd)
+        # wait a sec for amidithru to do it's thing
+        time.sleep(1)
+
+    # regex to match on rtmidi port name convention
+    # TODO is it necessary to write:  "\s+(\d+)?:\d+)"  instead?
+    nameRegex = "(" + midiName + ":" + midiName + "\s+\d+:\d+)"
+    matcher = re.compile(nameRegex)
+    newList = list(filter(matcher.match, mido.get_output_names()))
+    # all to get the name of the thing we just made
+    global midi_output_device
+    midi_output_device = newList[0]
+    #print("Using MIDI device:", midi_output_device)
+
 def loop():
     while True:
         for knob in knobArr:
@@ -157,8 +208,8 @@ def loop():
                 trim_pot_changed = True
         
             if trim_pot_changed:
-                print('midival = {volume} for pot {id}' .format(volume = set_midi, id = knob.midiAssignment))
-                # this should do midi stuff
+                #print('midival = {volume} for pot {id}' .format(volume = set_midi, id = knob.midiAssignment))
+                send_cc(0, knob.midiAssignment, set_midi)
         
                 # save the potentiometer reading for the next loop
                 knob.last = set_midi
@@ -167,7 +218,12 @@ def loop():
         time.sleep(0.01)
 
 def run():
-    # stuff
+    # set up the midi stuff
+    setup_midi_backend()
+    # do initial callbacks to set button states
+    my_callback()
+    my_callback2()
+    # then just loop
     loop()
 
 if __name__ == "__main__":
