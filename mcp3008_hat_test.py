@@ -8,10 +8,12 @@ import digitalio
 import board
 import adafruit_mcp3xxx.mcp3008 as MCP
 from adafruit_mcp3xxx.analog_in import AnalogIn
-
+from uresponsivevalue.uresponsivevalue import ResponsiveValue
  
 import RPi.GPIO as GPIO
 import datetime
+
+import threading
  
 def my_callback(channel):
     if GPIO.input(channel) == GPIO.HIGH:
@@ -34,29 +36,88 @@ cs = digitalio.DigitalInOut(board.D12)
 # create the mcp object
 mcp = MCP.MCP3008(spi, cs)
 
-# create an analog input channel on pin 0
-chan0 = AnalogIn(mcp, MCP.P0)
+class AnalogInMidi(AnalogIn):
+    last = 0
+    midiAssignment = 0
 
-print('Raw ADC Value: ', chan0.value)
-print('ADC Voltage: ' + str(chan0.voltage) + 'V')
+    # this is necessary to work with ResponsiveValue
+    def readVal(self):
+        return self.value
 
-last_read = 0       # this keeps track of the last potentiometer value
-tolerance = 250     # to keep from being jittery we'll only change
-                    # volume when the pot has moved a significant amount
-                    # on a 16-bit ADC
+# set tolerance for something reasonable for midi
+adcTolerance = 65535 / 128 * 1.25
+
+# create an analog input channel on pin 0-3 of the ADC
+# and their various properties
+
+# bottom forward
+chan0 = AnalogInMidi(mcp, MCP.P0)
+chan0.midiAssignment = 6
+chan0.smoothed = ResponsiveValue(chan0.readVal, max_value=65535, activity_threshold=adcTolerance)
+# top forward
+chan1 = AnalogInMidi(mcp, MCP.P1)
+chan1.midiAssignment = 7
+chan1.smoothed = ResponsiveValue(chan1.readVal, max_value=65535, activity_threshold=adcTolerance)
+# bottom back
+chan2 = AnalogInMidi(mcp, MCP.P2)
+chan2.midiAssignment = 8
+chan2.smoothed = ResponsiveValue(chan2.readVal, max_value=65535, activity_threshold=adcTolerance)
+# top back
+chan3 = AnalogInMidi(mcp, MCP.P3)
+chan3.midiAssignment = 9
+chan3.smoothed = ResponsiveValue(chan3.readVal, max_value=65535, activity_threshold=adcTolerance)
+
+# array of knobs
+knobArr = [chan0, chan1, chan2, chan3]
 
 GPIO.setmode(GPIO.BCM)
 
-# 
+
+# https://raspberrypi.stackexchange.com/questions/76667/debouncing-buttons-with-rpi-gpio-too-many-events-detected
+class ButtonHandler(threading.Thread):
+    def __init__(self, pin, func, edge='both', bouncetime=200):
+        super().__init__(daemon=True)
+
+        self.edge = edge
+        self.func = func
+        self.pin = pin
+        self.bouncetime = float(bouncetime)/1000
+
+        self.lastpinval = GPIO.input(self.pin)
+        self.lock = threading.Lock()
+
+    def __call__(self, *args):
+        if not self.lock.acquire(blocking=False):
+            return
+
+        t = threading.Timer(self.bouncetime, self.read, args=args)
+        t.start()
+
+    def read(self, *args):
+        pinval = GPIO.input(self.pin)
+
+        if (
+                ((pinval == 0 and self.lastpinval == 1) and
+                 (self.edge in ['falling', 'both'])) or
+                ((pinval == 1 and self.lastpinval == 0) and
+                 (self.edge in ['rising', 'both']))
+        ):
+            self.func(*args)
+
+        self.lastpinval = pinval
+        self.lock.release()
+
+# set up interrupt pins for switches
+# these should be debounced
 GPIO.setup(6, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-GPIO.add_event_detect(6, GPIO.BOTH, callback=my_callback)
+tmp_cb1 = ButtonHandler(6, my_callback, edge='both', bouncetime=10)
+tmp_cb1.start()
+GPIO.add_event_detect(6, GPIO.BOTH, callback=tmp_cb1)
 
 GPIO.setup(13, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-GPIO.add_event_detect(13, GPIO.BOTH, callback=my_callback2)
-
-#GPIO.setup(21, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-#GPIO.add_event_detect(21, GPIO.BOTH, callback=my_callback)
-
+tmp_cb2 = ButtonHandler(13, my_callback2, edge='both', bouncetime=10)
+tmp_cb2.start()
+GPIO.add_event_detect(13, GPIO.BOTH, callback=tmp_cb2)
 
 def remap_range(value, left_min, left_max, right_min, right_max):
     # this remaps a value from original (left) range to new (right) range
@@ -70,32 +131,44 @@ def remap_range(value, left_min, left_max, right_min, right_max):
     # Convert the 0-1 range into a value in the right range.
     return int(right_min + (valueScaled * right_span))
 
-while True:
-    # we'll assume that the pot didn't move
-    trim_pot_changed = False
+def loop():
+    while True:
+        for knob in knobArr:
+        
+            # we'll assume that the pot didn't move
+            trim_pot_changed = False
+        
+            # update the analog pin
+            knob.smoothed.update()
+    
+            # get smoothed value
+            trim_pot = knob.smoothed.responsive_value
+    
+            # convert to midi range
+            # convert 16bit adc0 (0-65535) trim pot read into 0-127 volume level.
+            # weird misnomer. the mcp3008 is 10 bit resolution, but this library 
+            # defaults to 16 bits of resolution on analog inputs
+            set_midi = remap_range(trim_pot, 0, 65535, 0, 127)
+        
+            # how much has it changed since the last read?
+            pot_adjust = abs(set_midi - knob.last)
+        
+            if pot_adjust > 0:
+                trim_pot_changed = True
+        
+            if trim_pot_changed:
+                print('midival = {volume} for pot {id}' .format(volume = set_midi, id = knob.midiAssignment))
+                # this should do midi stuff
+        
+                # save the potentiometer reading for the next loop
+                knob.last = set_midi
+        
+        # hang out for a bit, 10ms
+        time.sleep(0.01)
 
-    # read the analog pin
-    trim_pot = chan0.value
+def run():
+    # stuff
+    loop()
 
-    # how much has it changed since the last read?
-    pot_adjust = abs(trim_pot - last_read)
-
-    if pot_adjust > tolerance:
-        trim_pot_changed = True
-
-    if trim_pot_changed:
-        # convert 16bit adc0 (0-65535) trim pot read into 0-100 volume level
-        set_volume = remap_range(trim_pot, 0, 65535, 0, 100)
-        #set_volume = remap_range(trim_pot, 0, 1024, 0, 100)
-
-        # set OS volume playback volume
-        print('Volume = {volume}%' .format(volume = set_volume))
-        #set_vol_cmd = 'sudo amixer cset numid=1 -- {volume}% > /dev/null' \
-        #.format(volume = set_volume)
-        #os.system(set_vol_cmd)
-
-        # save the potentiometer reading for the next loop
-        last_read = trim_pot
-
-    # hang out and do nothing for a half second
-    time.sleep(0.1)
+if __name__ == "__main__":
+    run()
