@@ -20,7 +20,8 @@ import threading
 # the name of how it'll show up
 midiName = "The_Never_MIDI"
 
-# these callbacks should be better
+
+# TODO these callbacks should be better
 def my_callback(channel):
     # 11
     if GPIO.input(channel) == GPIO.HIGH:
@@ -39,15 +40,18 @@ def my_callback2(channel):
         send_cc(0, 12, 127)
         #print('2 ▲ ')
 
-# create the spi bus
+
+# create the spi bus for the mcp3008 (must be attached to spi bus)
 spi = busio.SPI(clock=board.SCK, MISO=board.MISO, MOSI=board.MOSI)
 
-# create the cs (chip select)
+# create the cs (chip select) (this can be any unused GPIO pin)
 cs = digitalio.DigitalInOut(board.D12)
 
-# create the mcp object
+# create the mcp object:
 mcp = MCP.MCP3008(spi, cs)
 
+
+# extend AnalogIn class with some bits for memory and call based interaction
 class AnalogInMidi(AnalogIn):
     last = 0
     midiAssignment = 0
@@ -55,6 +59,7 @@ class AnalogInMidi(AnalogIn):
     # this is necessary to work with ResponsiveValue
     def readVal(self):
         return self.value
+
 
 # set tolerance for something reasonable for midi
 adcTolerance = 65535 / 128 * 1.25
@@ -82,8 +87,8 @@ chan3.smoothed = ResponsiveValue(chan3.readVal, max_value=65535, activity_thresh
 # array of knobs
 knobArr = [chan0, chan1, chan2, chan3]
 
+# set GPIO for raspberry pi
 GPIO.setmode(GPIO.BCM)
-
 
 # https://raspberrypi.stackexchange.com/questions/76667/debouncing-buttons-with-rpi-gpio-too-many-events-detected
 class ButtonHandler(threading.Thread):
@@ -120,8 +125,7 @@ class ButtonHandler(threading.Thread):
         self.lock.release()
 
 
-# set up interrupt pins for switches
-# these should be debounced
+# set up interrupt pins for switches, 10ms debounce
 # forward button
 GPIO.setup(6, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 tmp_cb1 = ButtonHandler(6, my_callback, edge='both', bouncetime=10)
@@ -135,8 +139,8 @@ tmp_cb2.start()
 GPIO.add_event_detect(13, GPIO.BOTH, callback=tmp_cb2)
 
 
+# this remaps a value from original (left) range to new (right) range
 def remap_range(value, left_min, left_max, right_min, right_max):
-    # this remaps a value from original (left) range to new (right) range
     # Figure out how 'wide' each range is
     left_span = left_max - left_min
     right_span = right_max - right_min
@@ -148,15 +152,16 @@ def remap_range(value, left_min, left_max, right_min, right_max):
     return int(right_min + (valueScaled * right_span))
 
 
+# send midi cc messages
 def send_cc(channel, ccnum, val):
     msg = mido.Message('control_change', channel=channel, control=ccnum, value=val)
     output = mido.open_output(midi_output_device)
     output.send(msg)
 
 
+# check linux OS for amidithru running already
 def check_for_running_midi():
-    # TODO make this better
-    # so shitty, not pythonic at all
+    # TODO make this better, it's not pythonic at all
     # if only I weren't a linux sysadmin
     checkGrep = 'ps -ef | grep -Po "amidithru\s*' + midiName + '" | grep -v grep >/dev/null'
     check = os.system(checkGrep)
@@ -166,8 +171,8 @@ def check_for_running_midi():
     return check
 
 
+# set up backend with mido
 def setup_midi_backend():
-    # set up backend
     mido.set_backend('mido.backends.rtmidi')
 
     # system command to set up the midi thru port
@@ -188,6 +193,7 @@ def setup_midi_backend():
     #print("Using MIDI device:", midi_output_device)
 
 
+# run checks and updates forever
 def loop():
     while True:
         for knob in knobArr:
